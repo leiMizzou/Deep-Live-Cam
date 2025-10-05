@@ -41,7 +41,16 @@ def pre_check() -> bool:
 
 
 def pre_start() -> bool:
-    if not modules.globals.map_faces and not is_image(modules.globals.source_path):
+    # Handle multiple source images
+    if isinstance(modules.globals.source_path, list):
+        for i, src_path in enumerate(modules.globals.source_path):
+            if not is_image(src_path):
+                update_status(f"Source image {i+1} is not a valid image.", NAME)
+                return False
+            if not get_one_face(cv2.imread(src_path)):
+                update_status(f"No face detected in source image {i+1}: {src_path}", NAME)
+                return False
+    elif not modules.globals.map_faces and not is_image(modules.globals.source_path):
         update_status("Select an image for source path.", NAME)
         return False
     elif not modules.globals.map_faces and not get_one_face(
@@ -49,6 +58,7 @@ def pre_start() -> bool:
     ):
         update_status("No face in source path detected.", NAME)
         return False
+
     if not is_image(modules.globals.target_path) and not is_video(
         modules.globals.target_path
     ):
@@ -141,18 +151,45 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
                     temp_frame = swap_face(source_face, target_face, temp_frame)
 
     elif is_video(modules.globals.target_path):
-        if modules.globals.many_faces:
-            source_face = default_source_face()
-            for map in modules.globals.source_target_map:
-                target_frame = [
-                    f
-                    for f in map["target_faces_in_frame"]
-                    if f["location"] == temp_frame_path
-                ]
+        # For video with many_faces, use simple_map for intelligent matching
+        if modules.globals.many_faces and modules.globals.simple_map and len(modules.globals.simple_map.get('source_faces', [])) > 0:
+            detected_faces = get_many_faces(temp_frame)
+            if detected_faces:
+                # Debug output for first frame
+                if temp_frame_path and temp_frame_path.endswith("0000.png"):
+                    print(f"[DEBUG] Frame has {len(detected_faces)} detected faces")
+                    print(f"[DEBUG] simple_map has {len(modules.globals.simple_map['source_faces'])} source faces")
+                    print(f"[DEBUG] simple_map has {len(modules.globals.simple_map['target_embeddings'])} target embeddings")
 
-                for frame in target_frame:
-                    for target_face in frame["faces"]:
-                        temp_frame = swap_face(source_face, target_face, temp_frame)
+                if len(detected_faces) <= len(modules.globals.simple_map["target_embeddings"]):
+                    for idx, detected_face in enumerate(detected_faces):
+                        closest_centroid_index, distance = find_closest_centroid(
+                            modules.globals.simple_map["target_embeddings"],
+                            detected_face.normed_embedding,
+                        )
+                        if temp_frame_path and temp_frame_path.endswith("0000.png"):
+                            print(f"[DEBUG] Face {idx} matched to source {closest_centroid_index} (distance: {distance:.4f})")
+                        temp_frame = swap_face(
+                            modules.globals.simple_map["source_faces"][closest_centroid_index],
+                            detected_face,
+                            temp_frame,
+                        )
+                else:
+                    # More faces detected than expected, map in reverse
+                    detected_faces_centroids = []
+                    for face in detected_faces:
+                        detected_faces_centroids.append(face.normed_embedding)
+                    i = 0
+                    for target_embedding in modules.globals.simple_map["target_embeddings"]:
+                        closest_centroid_index, _ = find_closest_centroid(
+                            detected_faces_centroids, target_embedding
+                        )
+                        temp_frame = swap_face(
+                            modules.globals.simple_map["source_faces"][i],
+                            detected_faces[closest_centroid_index],
+                            temp_frame,
+                        )
+                        i += 1
 
         elif not modules.globals.many_faces:
             for map in modules.globals.source_target_map:
@@ -218,8 +255,22 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
 def process_frames(
     source_path: str, temp_frame_paths: List[str], progress: Any = None
 ) -> None:
+    # Debug: print map_faces status ONCE
+    global _DEBUG_PRINTED
+    if not hasattr(process_frames, '_DEBUG_PRINTED'):
+        process_frames._DEBUG_PRINTED = True
+        print(f"[DEBUG process_frames] map_faces={modules.globals.map_faces}")
+        print(f"[DEBUG process_frames] simple_map keys={list(modules.globals.simple_map.keys())}")
+        if modules.globals.simple_map:
+            print(f"[DEBUG process_frames] simple_map source_faces count={len(modules.globals.simple_map.get('source_faces', []))}")
+
     if not modules.globals.map_faces:
-        source_face = get_one_face(cv2.imread(source_path))
+        # Handle single source or multi-source (use first for non-map mode)
+        if isinstance(source_path, str):
+            source_face = get_one_face(cv2.imread(source_path))
+        else:
+            source_face = get_one_face(cv2.imread(source_path[0]))
+
         for temp_frame_path in temp_frame_paths:
             temp_frame = cv2.imread(temp_frame_path)
             try:
@@ -245,7 +296,12 @@ def process_frames(
 
 def process_image(source_path: str, target_path: str, output_path: str) -> None:
     if not modules.globals.map_faces:
-        source_face = get_one_face(cv2.imread(source_path))
+        # Handle single source image
+        if isinstance(source_path, str):
+            source_face = get_one_face(cv2.imread(source_path))
+        else:
+            # Multi-source list, use first one
+            source_face = get_one_face(cv2.imread(source_path[0]))
         target_frame = cv2.imread(target_path)
         result = process_frame(source_face, target_frame)
         cv2.imwrite(output_path, result)

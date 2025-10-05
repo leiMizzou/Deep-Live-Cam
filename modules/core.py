@@ -31,7 +31,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
 def parse_args() -> None:
     signal.signal(signal.SIGINT, lambda signal_number, frame: destroy())
     program = argparse.ArgumentParser()
-    program.add_argument('-s', '--source', help='select an source image', dest='source_path')
+    program.add_argument('-s', '--source', help='select source image(s), supports multiple images for face mapping', dest='source_path', nargs='+')
     program.add_argument('-t', '--target', help='select an target image or video', dest='target_path')
     program.add_argument('-o', '--output', help='select output file or directory', dest='output_path')
     program.add_argument('--frame-processor', help='pipeline of frame processors', dest='frame_processor', default=['face_swapper'], choices=['face_swapper', 'face_enhancer'], nargs='+')
@@ -42,6 +42,7 @@ def parse_args() -> None:
     program.add_argument('--nsfw-filter', help='filter the NSFW image or video', dest='nsfw_filter', action='store_true', default=False)
     program.add_argument('--map-faces', help='map source target faces', dest='map_faces', action='store_true', default=False)
     program.add_argument('--mouth-mask', help='mask the mouth region', dest='mouth_mask', action='store_true', default=False)
+    program.add_argument('--gender-filter', help='filter faces by gender', dest='gender_filter', choices=['M', 'F', 'male', 'female'], default=None)
     program.add_argument('--video-encoder', help='adjust output video encoder', dest='video_encoder', default='libx264', choices=['libx264', 'libx265', 'libvpx-vp9'])
     program.add_argument('--video-quality', help='adjust output video quality', dest='video_quality', type=int, default=18, choices=range(52), metavar='[0-51]')
     program.add_argument('-l', '--lang', help='Ui language', default="en")
@@ -60,9 +61,21 @@ def parse_args() -> None:
 
     args = program.parse_args()
 
-    modules.globals.source_path = args.source_path
+    # Handle multiple source images
+    if args.source_path and len(args.source_path) > 1:
+        modules.globals.source_path = args.source_path  # Store as list
+        modules.globals.map_faces = True  # Auto-enable map_faces for multi-source
+    elif args.source_path:
+        modules.globals.source_path = args.source_path[0]  # Single image as string
+    else:
+        modules.globals.source_path = None
+
     modules.globals.target_path = args.target_path
-    modules.globals.output_path = normalize_output_path(modules.globals.source_path, modules.globals.target_path, args.output_path)
+    modules.globals.output_path = normalize_output_path(
+        modules.globals.source_path if isinstance(modules.globals.source_path, str) else modules.globals.source_path[0] if modules.globals.source_path else None,
+        modules.globals.target_path,
+        args.output_path
+    )
     modules.globals.frame_processors = args.frame_processor
     modules.globals.headless = args.source_path or args.target_path or args.output_path
     modules.globals.keep_fps = args.keep_fps
@@ -71,7 +84,10 @@ def parse_args() -> None:
     modules.globals.many_faces = args.many_faces
     modules.globals.mouth_mask = args.mouth_mask
     modules.globals.nsfw_filter = args.nsfw_filter
-    modules.globals.map_faces = args.map_faces
+    # Only override map_faces if not already set by multi-source logic
+    if not modules.globals.map_faces:
+        modules.globals.map_faces = args.map_faces
+    modules.globals.gender_filter = args.gender_filter.upper()[0] if args.gender_filter else None
     modules.globals.video_encoder = args.video_encoder
     modules.globals.video_quality = args.video_quality
     modules.globals.live_mirror = args.live_mirror
@@ -176,6 +192,37 @@ def update_status(message: str, scope: str = 'DLC.CORE') -> None:
         ui.update_status(message)
 
 def start() -> None:
+    # Initialize multi-source mapping if multiple source images provided
+    if isinstance(modules.globals.source_path, list) and len(modules.globals.source_path) > 1:
+        update_status(f'Initializing multi-source mapping with {len(modules.globals.source_path)} source images...')
+        from modules.face_analyser import get_unique_faces_from_target_video, get_unique_faces_from_target_image, get_one_face
+        import cv2
+
+        if is_video(modules.globals.target_path):
+            get_unique_faces_from_target_video()
+        else:
+            get_unique_faces_from_target_image()
+
+        # Load source faces and assign to target faces
+        for i, source_img_path in enumerate(modules.globals.source_path):
+            if i < len(modules.globals.source_target_map):
+                source_frame = cv2.imread(source_img_path)
+                if source_frame is None:
+                    update_status(f'ERROR: Cannot read source image: {source_img_path}')
+                    return
+                source_face = get_one_face(source_frame)
+                if source_face is None:
+                    update_status(f'ERROR: No face detected in source image: {source_img_path}')
+                    return
+                modules.globals.source_target_map[i]['source'] = {
+                    'cv2': source_frame,
+                    'face': source_face
+                }
+                update_status(f'Mapped source image {i+1} ({source_img_path}) to target face {i+1}')
+
+        from modules.face_analyser import simplify_maps
+        simplify_maps()
+
     for frame_processor in get_frame_processors_modules(modules.globals.frame_processors):
         if not frame_processor.pre_start():
             return

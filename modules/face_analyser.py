@@ -34,9 +34,32 @@ def get_one_face(frame: Frame) -> Any:
 
 def get_many_faces(frame: Frame) -> Any:
     try:
-        return get_face_analyser().get(frame)
+        faces = get_face_analyser().get(frame)
+        if modules.globals.gender_filter and faces:
+            filtered_faces = []
+            for face in faces:
+                face_gender = get_face_gender(face)
+                if face_gender == modules.globals.gender_filter:
+                    filtered_faces.append(face)
+            return filtered_faces
+        return faces
     except IndexError:
         return None
+
+def get_face_gender(face: Any) -> str:
+    """Get gender from face object. Returns 'M' or 'F' or None."""
+    if hasattr(face, 'sex'):
+        sex_value = face.sex
+        if isinstance(sex_value, str):
+            return sex_value.upper()[0]
+    if hasattr(face, 'gender'):
+        gender_value = face.gender
+        if isinstance(gender_value, int):
+            # InsightFace gender: 0 = female, 1 = male
+            return 'M' if gender_value == 1 else 'F'
+        elif isinstance(gender_value, str):
+            return gender_value.upper()[0]
+    return None
 
 def has_valid_map() -> bool:
     for map in modules.globals.source_target_map:
