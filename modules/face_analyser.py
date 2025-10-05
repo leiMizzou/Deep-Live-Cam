@@ -35,13 +35,21 @@ def get_one_face(frame: Frame) -> Any:
 def get_many_faces(frame: Frame) -> Any:
     try:
         faces = get_face_analyser().get(frame)
+
+        # Apply gender filter
         if modules.globals.gender_filter and faces:
             filtered_faces = []
             for face in faces:
                 face_gender = get_face_gender(face)
                 if face_gender == modules.globals.gender_filter:
                     filtered_faces.append(face)
-            return filtered_faces
+            faces = filtered_faces
+
+        # Limit number of faces if max_faces is set
+        if modules.globals.max_faces and faces and len(faces) > modules.globals.max_faces:
+            # Sort by detection score (confidence) and keep top N
+            faces = sorted(faces, key=lambda x: x.det_score, reverse=True)[:modules.globals.max_faces]
+
         return faces
     except IndexError:
         return None
@@ -143,6 +151,20 @@ def get_unique_faces_from_target_video() -> Any:
             i += 1
 
         centroids = find_cluster_centroids(face_embeddings)
+
+        # Limit number of centroids/faces if max_faces is set
+        if modules.globals.max_faces and len(centroids) > modules.globals.max_faces:
+            print(f'[Face Tracking] Found {len(centroids)} unique faces, limiting to top {modules.globals.max_faces} most frequently appearing faces')
+            # Count occurrences of each centroid
+            centroid_counts = [0] * len(centroids)
+            for face_emb in face_embeddings:
+                closest_idx, _ = find_closest_centroid(centroids, face_emb)
+                centroid_counts[closest_idx] += 1
+
+            # Keep only top N most frequent centroids
+            top_indices = sorted(range(len(centroid_counts)), key=lambda i: centroid_counts[i], reverse=True)[:modules.globals.max_faces]
+            centroids = [centroids[i] for i in sorted(top_indices)]
+            print(f'[Face Tracking] Selected faces appearing in frames: {[centroid_counts[i] for i in sorted(top_indices)]}')
 
         for frame in frame_face_embeddings:
             for face in frame['faces']:

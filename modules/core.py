@@ -43,6 +43,7 @@ def parse_args() -> None:
     program.add_argument('--map-faces', help='map source target faces', dest='map_faces', action='store_true', default=False)
     program.add_argument('--mouth-mask', help='mask the mouth region', dest='mouth_mask', action='store_true', default=False)
     program.add_argument('--gender-filter', help='filter faces by gender', dest='gender_filter', choices=['M', 'F', 'male', 'female'], default=None)
+    program.add_argument('--max-faces', help='maximum number of faces to track and swap (helps avoid false matches)', dest='max_faces', type=int, default=None)
     program.add_argument('--video-encoder', help='adjust output video encoder', dest='video_encoder', default='libx264', choices=['libx264', 'libx265', 'libvpx-vp9'])
     program.add_argument('--video-quality', help='adjust output video quality', dest='video_quality', type=int, default=18, choices=range(52), metavar='[0-51]')
     program.add_argument('-l', '--lang', help='Ui language', default="en")
@@ -88,6 +89,7 @@ def parse_args() -> None:
     if not modules.globals.map_faces:
         modules.globals.map_faces = args.map_faces
     modules.globals.gender_filter = args.gender_filter.upper()[0] if args.gender_filter else None
+    modules.globals.max_faces = args.max_faces
     modules.globals.video_encoder = args.video_encoder
     modules.globals.video_quality = args.video_quality
     modules.globals.live_mirror = args.live_mirror

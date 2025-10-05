@@ -42,3 +42,4 @@ mask_feather_ratio = 8
 mask_down_size = 0.50
 mask_size = 1
 gender_filter = None  # Filter faces by gender: 'M'/'male' or 'F'/'female'
+max_faces = None  # Limit number of faces to track/swap (None = all faces)
