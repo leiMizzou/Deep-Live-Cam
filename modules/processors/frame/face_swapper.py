@@ -82,7 +82,7 @@ def get_face_swapper() -> Any:
     return FACE_SWAPPER
 
 
-def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
+def swap_face(source_face: Face, target_face: Face, temp_frame: Frame, original_frame: Frame = None) -> Frame:
     face_swapper = get_face_swapper()
 
     # Apply the face swap
@@ -91,12 +91,16 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
     )
 
     if modules.globals.mouth_mask:
-        # Create a mask for the target face
-        face_mask = create_face_mask(target_face, temp_frame)
+        # Use original frame (if provided) to extract mouth area, otherwise use current frame
+        # This ensures that when processing multiple faces, each mouth is extracted from the original image
+        source_frame_for_mouth = original_frame if original_frame is not None else temp_frame
 
-        # Create the mouth mask
+        # Create a mask for the target face
+        face_mask = create_face_mask(target_face, source_frame_for_mouth)
+
+        # Create the mouth mask from original frame
         mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon = (
-            create_lower_mouth_mask(target_face, temp_frame)
+            create_lower_mouth_mask(target_face, source_frame_for_mouth)
         )
 
         # Apply the mouth area
@@ -117,18 +121,22 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame:
     if modules.globals.color_correction:
         temp_frame = cv2.cvtColor(temp_frame, cv2.COLOR_BGR2RGB)
 
+    # Save a copy of the original frame for mouth mask extraction
+    # This ensures that when processing multiple faces, each mouth is extracted from the original image
+    original_frame = temp_frame.copy() if modules.globals.mouth_mask else None
+
     if modules.globals.many_faces:
         many_faces = get_many_faces(temp_frame)
         if many_faces:
             for target_face in many_faces:
                 if source_face and target_face:
-                    temp_frame = swap_face(source_face, target_face, temp_frame)
+                    temp_frame = swap_face(source_face, target_face, temp_frame, original_frame)
                 else:
                     print("Face detection failed for target/source.")
     else:
         target_face = get_one_face(temp_frame)
         if target_face and source_face:
-            temp_frame = swap_face(source_face, target_face, temp_frame)
+            temp_frame = swap_face(source_face, target_face, temp_frame, original_frame)
         else:
             logging.error("Face detection failed for target or source.")
     return temp_frame
@@ -136,19 +144,58 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame:
 
 
 def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
+    # Save a copy of the original frame for mouth mask extraction
+    # This ensures that when processing multiple faces, each mouth is extracted from the original image
+    original_frame = temp_frame.copy() if modules.globals.mouth_mask else None
+
     if is_image(modules.globals.target_path):
         if modules.globals.many_faces:
-            source_face = default_source_face()
-            for map in modules.globals.source_target_map:
-                target_face = map["target"]["face"]
-                temp_frame = swap_face(source_face, target_face, temp_frame)
+            # Use simple_map for intelligent face matching (similar to video processing)
+            if modules.globals.simple_map and len(modules.globals.simple_map.get('source_faces', [])) > 0:
+                detected_faces = get_many_faces(temp_frame)
+                if detected_faces:
+                    if len(detected_faces) <= len(modules.globals.simple_map["target_embeddings"]):
+                        for idx, detected_face in enumerate(detected_faces):
+                            closest_centroid_index, distance = find_closest_centroid(
+                                modules.globals.simple_map["target_embeddings"],
+                                detected_face.normed_embedding,
+                            )
+                            temp_frame = swap_face(
+                                modules.globals.simple_map["source_faces"][closest_centroid_index],
+                                detected_face,
+                                temp_frame,
+                                original_frame,
+                            )
+                    else:
+                        # More faces detected than expected, map in reverse
+                        detected_faces_centroids = []
+                        for face in detected_faces:
+                            detected_faces_centroids.append(face.normed_embedding)
+                        i = 0
+                        for target_embedding in modules.globals.simple_map["target_embeddings"]:
+                            closest_centroid_index, _ = find_closest_centroid(
+                                detected_faces_centroids, target_embedding
+                            )
+                            temp_frame = swap_face(
+                                modules.globals.simple_map["source_faces"][i],
+                                detected_faces[closest_centroid_index],
+                                temp_frame,
+                                original_frame,
+                            )
+                            i += 1
+            else:
+                # Fallback: use default source face for all targets
+                source_face = default_source_face()
+                for map in modules.globals.source_target_map:
+                    target_face = map["target"]["face"]
+                    temp_frame = swap_face(source_face, target_face, temp_frame, original_frame)
 
         elif not modules.globals.many_faces:
             for map in modules.globals.source_target_map:
                 if "source" in map:
                     source_face = map["source"]["face"]
                     target_face = map["target"]["face"]
-                    temp_frame = swap_face(source_face, target_face, temp_frame)
+                    temp_frame = swap_face(source_face, target_face, temp_frame, original_frame)
 
     elif is_video(modules.globals.target_path):
         # For video with many_faces, use simple_map for intelligent matching
@@ -173,6 +220,7 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
                             modules.globals.simple_map["source_faces"][closest_centroid_index],
                             detected_face,
                             temp_frame,
+                            original_frame,
                         )
                 else:
                     # More faces detected than expected, map in reverse
@@ -188,6 +236,7 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
                             modules.globals.simple_map["source_faces"][i],
                             detected_faces[closest_centroid_index],
                             temp_frame,
+                            original_frame,
                         )
                         i += 1
 
@@ -203,7 +252,7 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
 
                     for frame in target_frame:
                         for target_face in frame["faces"]:
-                            temp_frame = swap_face(source_face, target_face, temp_frame)
+                            temp_frame = swap_face(source_face, target_face, temp_frame, original_frame)
 
     else:
         detected_faces = get_many_faces(temp_frame)
@@ -211,7 +260,7 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
             if detected_faces:
                 source_face = default_source_face()
                 for target_face in detected_faces:
-                    temp_frame = swap_face(source_face, target_face, temp_frame)
+                    temp_frame = swap_face(source_face, target_face, temp_frame, original_frame)
 
         elif not modules.globals.many_faces:
             if detected_faces:
@@ -230,6 +279,7 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
                             ],
                             detected_face,
                             temp_frame,
+                            original_frame,
                         )
                 else:
                     detected_faces_centroids = []
@@ -247,6 +297,7 @@ def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
                             modules.globals.simple_map["source_faces"][i],
                             detected_faces[closest_centroid_index],
                             temp_frame,
+                            original_frame,
                         )
                         i += 1
     return temp_frame
